@@ -326,15 +326,28 @@ process.on('SIGINT', () => {
 });
 
 const loginAllBots = async () => {
-  await Promise.all(bots.map((bot, index) => bot.client.login(bot.token).then(() => {
-    console.log(`🔐 [Bot ${index + 1}] Login complete`);
-  }).catch((error) => {
-    console.error(`❌ [Bot ${index + 1}] Login failed:`, error.message);
-    throw error;
-  })));
+  await Promise.all(bots.map(async (bot, index) => {
+    bot.status = 'logging_in';
+    bot.lastError = null;
+    console.log(`🔐 [Bot ${index + 1}] Login started`);
+
+    try {
+      await Promise.race([
+        bot.client.login(bot.token),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Login timed out after 30 seconds')), 30000))
+      ]);
+      console.log(`🔐 [Bot ${index + 1}] Login request completed; waiting for ready event`);
+    } catch (error) {
+      bot.status = 'offline';
+      bot.lastError = error?.message || String(error);
+      console.error(`❌ [Bot ${index + 1}] Login failed: ${bot.lastError}`);
+    }
+  }));
 };
 
-loginAllBots().catch(() => {});
+loginAllBots().catch((error) => {
+  console.error('❌ Login process failed:', error?.message || error);
+});
 
 console.log(`🚀 Starting ${bots.length} voice bot(s) from BOT_TOKENS/BOT_TOKEN`);
 console.log(`🧠 Health endpoint enabled on port ${port}`);
