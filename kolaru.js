@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const { Client } = require('discord.js-selfbot-v13');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
 const { Readable, PassThrough } = require('stream');
