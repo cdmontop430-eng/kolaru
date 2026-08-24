@@ -334,10 +334,7 @@ const loginAllBots = async () => {
     console.log(`🔐 [Bot ${index + 1}] Login started`);
 
     try {
-      await Promise.race([
-        bot.client.login(bot.token),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Login timed out after 30 seconds')), 30000))
-      ]);
+      await bot.client.login(bot.token);
       console.log(`🔐 [Bot ${index + 1}] Login request completed; waiting for ready event`);
     } catch (error) {
       bot.status = 'offline';
