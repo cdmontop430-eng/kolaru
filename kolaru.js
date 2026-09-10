@@ -636,13 +636,45 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      tokenListEl.innerHTML = data.tokens.map((token, index) => {
-        const isReady = data.readyTokens && data.readyTokens.includes(index);
-        return '<div style="padding:8px 12px; border:1px solid rgba(148,163,184,.2); border-radius:10px; background:#0f172a;">'
-          + '<div><strong>Token ' + (index + 1) + '</strong> ' + (isReady ? '<span style="color:#22c55e;">Ready</span>' : '<span style="color:#f97316;">Waiting</span>') + '</div>'
-          + '<div style="font-size:12px; color:#94a3b8; word-break:break-all;">' + token.slice(0, 8) + '...' + token.slice(-4) + '</div>'
+      tokenListEl.innerHTML = data.tokens.map((tokenItem, index) => {
+        const item = tokenItem || {};
+        const token = item.token || '';
+        const status = item.status || 'waiting';
+        const label = status === 'ready' ? 'Ready' : status === 'invalid' ? 'Invalid' : status === 'offline' ? 'Offline' : 'Waiting';
+        const statusColor = status === 'ready' ? '#22c55e' : status === 'invalid' ? '#f97316' : status === 'offline' ? '#fbbf24' : '#38bdf8';
+        const errorText = item.lastError ? '<div style="font-size:11px; color:#fca5a5; margin-top:4px;">' + item.lastError + '</div>' : '';
+
+        return '<div style="padding:12px; border:1px solid rgba(148,163,184,.22); border-radius:12px; background:#0f172a; display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;">'
+          + '<div style="flex:1; min-width:220px;">'
+          + '<div><strong>Token ' + (index + 1) + '</strong> <span style="color:' + statusColor + '; font-weight:700;">' + label + '</span></div>'
+          + '<div style="font-size:12px; color:#94a3b8; word-break:break-all; margin-top:4px;">' + (token ? token.slice(0, 8) + '...' + token.slice(-4) : 'token hidden') + '</div>'
+          + errorText
+          + '</div>'
+          + '<button type="button" data-token-index="' + index + '" class="delete-token-btn" style="background:#ef4444;color:#fff;padding:8px 12px;border-radius:10px;border:none;cursor:pointer; font-weight:700;">Delete</button>'
           + '</div>';
       }).join('');
+
+      document.querySelectorAll('.delete-token-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const tokenIndex = Number(button.dataset.tokenIndex);
+          if (Number.isNaN(tokenIndex)) return;
+
+          tokenMessageEl.textContent = 'Deleting token...';
+          try {
+            const res = await fetch('/tokens/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ index: tokenIndex })
+            });
+            const payload = await res.json();
+            tokenMessageEl.textContent = payload.status || payload.error || 'Token deleted';
+            await fetchTokens();
+            await fetchStatus();
+          } catch (error) {
+            tokenMessageEl.textContent = 'Error: ' + error.message;
+          }
+        });
+      });
     };
 
     const fetchTokens = async () => {
