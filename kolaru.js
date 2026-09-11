@@ -589,23 +589,6 @@ const server = http.createServer(async (req, res) => {
   </div>
 
   <div class="card">
-    <h2 style="margin-top:0;">Broadcast Manager</h2>
-    <div class="form-row">
-      <input id="broadcastChannelId" placeholder="Text Channel ID" />
-      <input id="broadcastCount" type="number" min="1" value="1" placeholder="Count" />
-      <textarea id="broadcastMessage" rows="4" placeholder="Broadcast sending is disabled." style="width:100%; resize:vertical; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:12px; padding:12px 14px; margin-top:10px;" disabled>Hello</textarea>
-      <label style="display:flex; align-items:center; gap:8px; margin-top:10px; color:#cbd5e1;">
-        <input id="broadcastMention" type="checkbox" disabled /> Mention @here
-      </label>
-      <input id="broadcastImage" type="file" accept="image/*" style="background:#0f172a; border-color:#334155;" disabled />
-    </div>
-    <div class="actions">
-      <button id="sendBroadcastBtn" style="background:#475569;color:#fff;cursor:not-allowed;" disabled>Send to All Ready Bots</button>
-    </div>
-    <div id="broadcastStatus" style="margin-top:16px; color:#cbd5e1; min-height:22px;">Broadcast sending is disabled.</div>
-  </div>
-
-  <div class="card">
     <h2 style="margin-top:0;">Voice Channel Control</h2>
     <div class="form-row">
       <input id="inputGuild" placeholder="Guild ID (optional)" />
@@ -917,11 +900,6 @@ const server = http.createServer(async (req, res) => {
     });
 
     document.getElementById('refreshTokensBtn').addEventListener('click', fetchTokens);
-
-    document.getElementById('sendBroadcastBtn').addEventListener('click', async () => {
-      const statusEl = document.getElementById('broadcastStatus');
-      statusEl.textContent = 'Broadcast sending is disabled.';
-    });
 
     document.getElementById('joinBtn').addEventListener('click', async () => {
       const channelId = channelInput.value.trim();
