@@ -365,33 +365,36 @@ function getBroadcastMessageText(text, count, mentionCount) {
   const baseText = String(text || '').trim() || 'Broadcast message';
   const countValue = Number.isFinite(Number(count)) ? Number(count) : 1;
   const textWithCount = baseText.replace(/\{count\}|\{COUNT\}/gi, String(countValue));
-  const finalText = textWithCount.includes(String(countValue)) ? textWithCount : `${textWithCount} | Count: ${countValue}`;
+  const finalText = textWithCount.includes(String(countValue))
+    ? textWithCount
+    : `${baseText}${baseText ? ' ' : ''}${countValue}`;
   return mentionCount ? `${finalText} @here` : finalText;
 }
 
 async function resolveBroadcastChannel(bot, channelId) {
-  const directChannel = await bot.client.channels.fetch(channelId).catch(() => null);
-  if (directChannel && (directChannel.isText?.() || directChannel.isThread?.())) {
-    return directChannel;
+  if (!channelId) return null;
+
+  const directFromCache = bot.client.channels.cache.get(channelId);
+  if (directFromCache && (directFromCache.isText?.() || directFromCache.isThread?.())) {
+    return directFromCache;
   }
 
-  if (directChannel && directChannel.isVoice?.()) {
-    const guild = directChannel.guild || await bot.client.guilds.fetch(directChannel.guildId).catch(() => null);
-    if (guild) {
-      const textChannel = guild.channels.cache.find((channel) => channel.isText?.())
-        || [...(await guild.channels.fetch().catch(() => new Map()).values())].find((channel) => channel.isText?.());
-      if (textChannel) return textChannel;
+  const directFetched = await bot.client.channels.fetch(channelId).catch(() => null);
+  if (directFetched && (directFetched.isText?.() || directFetched.isThread?.())) {
+    return directFetched;
+  }
+
+  for (const guild of bot.client.guilds.cache.values()) {
+    const guildChannel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+    if (guildChannel && (guildChannel.isText?.() || guildChannel.isThread?.())) {
+      return guildChannel;
     }
   }
 
-  const guildId = bot.guildId || bot.client?.guilds?.cache?.first()?.id;
-  if (guildId) {
-    const guild = bot.client.guilds.cache.get(guildId) || await bot.client.guilds.fetch(guildId).catch(() => null);
-    if (guild) {
-      const textChannel = guild.channels.cache.find((channel) => channel.isText?.())
-        || [...(await guild.channels.fetch().catch(() => new Map()).values())].find((channel) => channel.isText?.());
-      if (textChannel) return textChannel;
-    }
+  for (const guild of bot.client.guilds.cache.values()) {
+    const fallback = guild.channels.cache.find((channel) => channel.isText?.())
+      || [...(await guild.channels.fetch().catch(() => new Map()).values())].find((channel) => channel.isText?.());
+    if (fallback) return fallback;
   }
 
   return null;
