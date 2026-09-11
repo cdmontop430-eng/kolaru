@@ -335,7 +335,7 @@ async function addTokenAndLogin(newToken) {
     throw new Error('Token is required.');
   }
 
-  const updatedTokens = addTokenToList(tokens, token, maxBots);
+  const updatedTokens = addTokenToList(tokens, token, Number.MAX_SAFE_INTEGER);
   const isDuplicate = tokens.includes(token);
   const isAtCapacity = updatedTokens.length === tokens.length && !updatedTokens.includes(token);
 
@@ -344,7 +344,7 @@ async function addTokenAndLogin(newToken) {
   }
 
   if (isAtCapacity) {
-    throw new Error(`This app is already at ${maxBots} bots. Remove one or increase MAX_BOTS.`);
+    throw new Error('This token could not be added.');
   }
 
   tokens = updatedTokens;
@@ -359,6 +359,69 @@ async function addTokenAndLogin(newToken) {
     index: bots.length,
     token: token.slice(0, 8) + '...' + token.slice(-4),
   };
+}
+
+function getBroadcastMessageText(text, count, mentionCount) {
+  const baseText = String(text || '').trim() || 'Broadcast message';
+  const countValue = Number.isFinite(Number(count)) ? Number(count) : 1;
+  const textWithCount = baseText.replace(/\{count\}|\{COUNT\}/gi, String(countValue));
+  const finalText = textWithCount.includes(String(countValue)) ? textWithCount : `${textWithCount} | Count: ${countValue}`;
+  return mentionCount ? `${finalText} @here` : finalText;
+}
+
+async function resolveBroadcastChannel(bot, channelId) {
+  const directChannel = await bot.client.channels.fetch(channelId).catch(() => null);
+  if (directChannel && (directChannel.isText?.() || directChannel.isThread?.())) {
+    return directChannel;
+  }
+
+  if (directChannel && directChannel.isVoice?.()) {
+    const guild = directChannel.guild || await bot.client.guilds.fetch(directChannel.guildId).catch(() => null);
+    if (guild) {
+      const textChannel = guild.channels.cache.find((channel) => channel.isText?.())
+        || [...(await guild.channels.fetch().catch(() => new Map()).values())].find((channel) => channel.isText?.());
+      if (textChannel) return textChannel;
+    }
+  }
+
+  const guildId = bot.guildId || bot.client?.guilds?.cache?.first()?.id;
+  if (guildId) {
+    const guild = bot.client.guilds.cache.get(guildId) || await bot.client.guilds.fetch(guildId).catch(() => null);
+    if (guild) {
+      const textChannel = guild.channels.cache.find((channel) => channel.isText?.())
+        || [...(await guild.channels.fetch().catch(() => new Map()).values())].find((channel) => channel.isText?.());
+      if (textChannel) return textChannel;
+    }
+  }
+
+  return null;
+}
+
+async function broadcastToAllBots({ channelId, message, count, mentionCount, imageData, imageName }) {
+  const readyBots = bots.filter((bot) => bot.status === 'ready');
+  if (!readyBots.length) {
+    throw new Error('No ready bots available to send the message.');
+  }
+
+  const finalMessage = getBroadcastMessageText(message, count, mentionCount);
+  const fileBuffer = imageData ? Buffer.from(imageData.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, ''), 'base64') : null;
+  const attachments = fileBuffer ? [{ attachment: fileBuffer, name: imageName || 'broadcast-image.png' }] : [];
+
+  const results = await Promise.allSettled(readyBots.map(async (bot) => {
+    const targetChannel = await resolveBroadcastChannel(bot, channelId);
+    if (!targetChannel) {
+      throw new Error(`Bot ${bot.token.slice(0, 8)}... has no text channel available.`);
+    }
+
+    const payload = attachments.length > 0 ? { content: finalMessage, files: attachments } : { content: finalMessage };
+    await targetChannel.send(payload);
+    return { bot: bot.token.slice(0, 8) + '...', ok: true };
+  }));
+
+  const sent = results.filter((entry) => entry.status === 'fulfilled').length;
+  const failed = results.filter((entry) => entry.status === 'rejected').length;
+
+  return { sent, failed, total: readyBots.length, message: finalMessage };
 }
 
 process.on('unhandledRejection', (error) => {
@@ -390,6 +453,116 @@ if (bots.length > 0) {
 console.log(`🧠 Health endpoint enabled on port ${port}`);
 
 const server = http.createServer(async (req, res) => {
+  if (req.url === '/broadcast' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Veera.exe Broadcast Manager</title>
+  <style>
+    body { background: #020817; color: #e2e8f0; font-family: system-ui, sans-serif; margin: 0; padding: 28px; }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: clamp(2rem, 3vw, 2.6rem); }
+    p { color: #94a3b8; }
+    a { color: #38bdf8; text-decoration: none; }
+    .card { background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(148,163,184,0.18); border-radius: 18px; padding: 20px; margin-top: 18px; }
+    input, textarea, button { font: inherit; }
+    input, textarea { width: 100%; box-sizing: border-box; border: 1px solid #334155; background: #0f172a; color: white; border-radius: 12px; padding: 12px 14px; margin-top: 10px; }
+    textarea { min-height: 120px; resize: vertical; }
+    label { display: block; margin-top: 12px; font-weight: 600; color: #cbd5e1; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .row > div { flex: 1 1 220px; }
+    button { cursor: pointer; border: none; padding: 12px 18px; border-radius: 12px; font-weight: 700; margin-top: 14px; background: linear-gradient(135deg, #8b5cf6, #ec4899); color: white; }
+    .muted { color: #a5b4fc; }
+    #status { margin-top: 16px; color: #cbd5e1; min-height: 24px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a href="/">← Back to dashboard</a>
+    <h1>Veera.exe Broadcast Manager</h1>
+    <p>Send one message or image to all ready bots in a channel, with a count and optional @here ping.</p>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Guild ID (optional)</label>
+          <input id="guildId" placeholder="Guild ID" />
+        </div>
+        <div>
+          <label>Channel ID</label>
+          <input id="channelId" placeholder="Text or Voice Channel ID" required />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Count</label>
+          <input id="count" type="number" min="1" value="1" />
+        </div>
+        <div>
+          <label>Message</label>
+          <textarea id="message" placeholder="Type your message. Use {count} to inject the number.">Hello {count}</textarea>
+        </div>
+      </div>
+
+      <label><input id="mentionCount" type="checkbox" /> Mention @here with the count</label>
+      <label>Image Upload (optional)</label>
+      <input id="imageInput" type="file" accept="image/*" />
+
+      <button id="sendBroadcastBtn">Send to all ready bots</button>
+      <div id="status"></div>
+    </div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    document.getElementById('sendBroadcastBtn').addEventListener('click', async () => {
+      const channelId = document.getElementById('channelId').value.trim();
+      const guildId = document.getElementById('guildId').value.trim();
+      const message = document.getElementById('message').value;
+      const count = document.getElementById('count').value;
+      const mentionCount = document.getElementById('mentionCount').checked;
+      const imageFile = document.getElementById('imageInput').files[0];
+
+      if (!channelId) {
+        statusEl.textContent = 'Please enter a channel ID.';
+        return;
+      }
+
+      statusEl.textContent = 'Sending broadcast...';
+
+      try {
+        let imageData = null;
+        if (imageFile) {
+          const reader = new FileReader();
+          imageData = await new Promise((resolve, reject) => {
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Image read failed'));
+            reader.readAsDataURL(imageFile);
+          });
+        }
+
+        const res = await fetch('/broadcast/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channelId, guildId, message, count, mentionCount, imageData, imageName: imageFile ? imageFile.name : null })
+        });
+
+        const data = await res.json();
+        statusEl.textContent = data.status || data.error || 'Broadcast sent.';
+      } catch (error) {
+        statusEl.textContent = 'Error: ' + error.message;
+      }
+    });
+  </script>
+</body>
+</html>`);
+    return;
+  }
+
   if (req.url === '/' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(`<!DOCTYPE html>
@@ -431,6 +604,7 @@ const server = http.createServer(async (req, res) => {
       <button id="addTokenBtn" style="background:#8b5cf6;color:#fff;">Add Token</button>
       <button id="refreshTokensBtn" style="background:#475569;color:#fff;">Refresh Tokens</button>
     </div>
+    <div style="margin-top:10px;"><a href="/broadcast" style="color:#38bdf8; text-decoration:none; font-weight:700;">Open Broadcast Manager</a></div>
     <div id="tokenMessage" style="margin:18px 0 0;color:#cbd5e1;"></div>
     <div id="tokenList" style="margin-top:16px; display:grid; gap:10px;"></div>
   </div>
@@ -899,16 +1073,36 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/tokens/add' && req.method === 'POST') {
     try {
       const body = await parseJSONBody(req);
-      const token = String(body.token || body.TOKEN || '').trim();
-      if (!token) {
+      const rawTokenValue = String(body.token || body.TOKEN || '').trim();
+      const tokensToAdd = parseTokenList(rawTokenValue || '').length > 0 ? parseTokenList(rawTokenValue) : [rawTokenValue];
+
+      if (tokensToAdd.length === 0 || !tokensToAdd.some(Boolean)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Token is required' }));
         return;
       }
 
-      const result = await addTokenAndLogin(token);
+      const addedResults = [];
+      const errors = [];
+
+      for (const token of tokensToAdd) {
+        try {
+          const result = await addTokenAndLogin(token);
+          addedResults.push(result);
+        } catch (error) {
+          errors.push(error.message || 'Could not add token');
+        }
+      }
+
+      if (addedResults.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: errors[0] || 'Could not add token' }));
+        return;
+      }
+
+      const readyCount = addedResults.filter((item) => item.ready).length;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: `Token added and ${result.ready ? 'ready' : 'logging in'}!`, result }));
+      res.end(JSON.stringify({ status: `${addedResults.length} token(s) added. ${readyCount} ready.`, added: addedResults, errors }));
     } catch (error) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message || 'Could not add token' }));
@@ -939,6 +1133,32 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message || 'Could not delete token' }));
+    }
+    return;
+  }
+
+  if (req.url === '/broadcast/send' && req.method === 'POST') {
+    try {
+      const body = await parseJSONBody(req);
+      const channelId = String(body.channelId || '').trim();
+      const message = String(body.message || '');
+      const count = Number(body.count || 1);
+      const mentionCount = Boolean(body.mentionCount);
+      const imageData = body.imageData || null;
+      const imageName = String(body.imageName || 'broadcast-image.png');
+
+      if (!channelId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Channel ID is required' }));
+        return;
+      }
+
+      const result = await broadcastToAllBots({ channelId, message, count, mentionCount, imageData, imageName });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: `Sent to ${result.sent} ready bot(s). ${result.failed} failed.`, result }));
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message || 'Broadcast failed' }));
     }
     return;
   }
