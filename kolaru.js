@@ -362,13 +362,12 @@ async function addTokenAndLogin(newToken) {
 }
 
 function getBroadcastMessageText(text, count, mentionCount) {
-  const baseText = String(text || '').trim() || 'Broadcast message';
-  const countValue = Number.isFinite(Number(count)) ? Number(count) : 1;
-  const textWithCount = baseText.replace(/\{count\}|\{COUNT\}/gi, String(countValue));
-  const finalText = textWithCount.includes(String(countValue))
-    ? textWithCount
-    : `${baseText}${baseText ? ' ' : ''}${countValue}`;
-  return mentionCount ? `${finalText} @here` : finalText;
+  const baseText = String(text || '').trim();
+  if (!baseText) {
+    return '';
+  }
+
+  return mentionCount ? `${baseText} @here` : baseText;
 }
 
 async function resolveBroadcastChannel(bot, channelId) {
@@ -401,30 +400,7 @@ async function resolveBroadcastChannel(bot, channelId) {
 }
 
 async function broadcastToAllBots({ channelId, message, count, mentionCount, imageData, imageName }) {
-  const readyBots = bots.filter((bot) => bot.status === 'ready');
-  if (!readyBots.length) {
-    throw new Error('No ready bots available to send the message.');
-  }
-
-  const finalMessage = getBroadcastMessageText(message, count, mentionCount);
-  const fileBuffer = imageData ? Buffer.from(imageData.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, ''), 'base64') : null;
-  const attachments = fileBuffer ? [{ attachment: fileBuffer, name: imageName || 'broadcast-image.png' }] : [];
-
-  const results = await Promise.allSettled(readyBots.map(async (bot) => {
-    const targetChannel = await resolveBroadcastChannel(bot, channelId);
-    if (!targetChannel) {
-      throw new Error(`Bot ${bot.token.slice(0, 8)}... has no text channel available.`);
-    }
-
-    const payload = attachments.length > 0 ? { content: finalMessage, files: attachments } : { content: finalMessage };
-    await targetChannel.send(payload);
-    return { bot: bot.token.slice(0, 8) + '...', ok: true };
-  }));
-
-  const sent = results.filter((entry) => entry.status === 'fulfilled').length;
-  const failed = results.filter((entry) => entry.status === 'rejected').length;
-
-  return { sent, failed, total: readyBots.length, message: finalMessage };
+  throw new Error('Broadcast sending is disabled.');
 }
 
 process.on('unhandledRejection', (error) => {
@@ -507,7 +483,7 @@ const server = http.createServer(async (req, res) => {
         </div>
         <div>
           <label>Message</label>
-          <textarea id="message" placeholder="Type your message. Use {count} to inject the number.">Hello {count}</textarea>
+          <textarea id="message" placeholder="Type the exact message to send to all ready bots.">Hello</textarea>
         </div>
       </div>
 
@@ -617,16 +593,16 @@ const server = http.createServer(async (req, res) => {
     <div class="form-row">
       <input id="broadcastChannelId" placeholder="Text Channel ID" />
       <input id="broadcastCount" type="number" min="1" value="1" placeholder="Count" />
-      <textarea id="broadcastMessage" rows="4" placeholder="Type your message. Use {count} for the number." style="width:100%; resize:vertical; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:12px; padding:12px 14px; margin-top:10px;">Hello {count}</textarea>
+      <textarea id="broadcastMessage" rows="4" placeholder="Broadcast sending is disabled." style="width:100%; resize:vertical; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:12px; padding:12px 14px; margin-top:10px;" disabled>Hello</textarea>
       <label style="display:flex; align-items:center; gap:8px; margin-top:10px; color:#cbd5e1;">
-        <input id="broadcastMention" type="checkbox" /> Mention @here
+        <input id="broadcastMention" type="checkbox" disabled /> Mention @here
       </label>
-      <input id="broadcastImage" type="file" accept="image/*" style="background:#0f172a; border-color:#334155;" />
+      <input id="broadcastImage" type="file" accept="image/*" style="background:#0f172a; border-color:#334155;" disabled />
     </div>
     <div class="actions">
-      <button id="sendBroadcastBtn" style="background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;">Send to All Ready Bots</button>
+      <button id="sendBroadcastBtn" style="background:#475569;color:#fff;cursor:not-allowed;" disabled>Send to All Ready Bots</button>
     </div>
-    <div id="broadcastStatus" style="margin-top:16px; color:#cbd5e1; min-height:22px;"></div>
+    <div id="broadcastStatus" style="margin-top:16px; color:#cbd5e1; min-height:22px;">Broadcast sending is disabled.</div>
   </div>
 
   <div class="card">
@@ -943,49 +919,8 @@ const server = http.createServer(async (req, res) => {
     document.getElementById('refreshTokensBtn').addEventListener('click', fetchTokens);
 
     document.getElementById('sendBroadcastBtn').addEventListener('click', async () => {
-      const channelId = document.getElementById('broadcastChannelId').value.trim();
-      const count = document.getElementById('broadcastCount').value;
-      const message = document.getElementById('broadcastMessage').value;
-      const mentionCount = document.getElementById('broadcastMention').checked;
-      const imageFile = document.getElementById('broadcastImage').files[0];
       const statusEl = document.getElementById('broadcastStatus');
-
-      if (!channelId) {
-        statusEl.textContent = 'Please enter a text channel ID.';
-        return;
-      }
-
-      statusEl.textContent = 'Sending broadcast...';
-
-      try {
-        let imageData = null;
-        if (imageFile) {
-          const reader = new FileReader();
-          imageData = await new Promise((resolve, reject) => {
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = () => reject(new Error('Image read failed'));
-            reader.readAsDataURL(imageFile);
-          });
-        }
-
-        const res = await fetch('/broadcast/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            channelId,
-            message,
-            count,
-            mentionCount,
-            imageData,
-            imageName: imageFile ? imageFile.name : null
-          })
-        });
-
-        const data = await res.json();
-        statusEl.textContent = data.status || data.error || 'Broadcast sent.';
-      } catch (error) {
-        statusEl.textContent = 'Error: ' + error.message;
-      }
+      statusEl.textContent = 'Broadcast sending is disabled.';
     });
 
     document.getElementById('joinBtn').addEventListener('click', async () => {
