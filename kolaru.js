@@ -610,6 +610,23 @@ const server = http.createServer(async (req, res) => {
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0;">Broadcast Manager</h2>
+    <div class="form-row">
+      <input id="broadcastChannelId" placeholder="Text Channel ID" />
+      <input id="broadcastCount" type="number" min="1" value="1" placeholder="Count" />
+      <textarea id="broadcastMessage" rows="4" placeholder="Type your message. Use {count} for the number." style="width:100%; resize:vertical; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:12px; padding:12px 14px; margin-top:10px;">Hello {count}</textarea>
+      <label style="display:flex; align-items:center; gap:8px; margin-top:10px; color:#cbd5e1;">
+        <input id="broadcastMention" type="checkbox" /> Mention @here
+      </label>
+      <input id="broadcastImage" type="file" accept="image/*" style="background:#0f172a; border-color:#334155;" />
+    </div>
+    <div class="actions">
+      <button id="sendBroadcastBtn" style="background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;">Send to All Ready Bots</button>
+    </div>
+    <div id="broadcastStatus" style="margin-top:16px; color:#cbd5e1; min-height:22px;"></div>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0;">Voice Channel Control</h2>
     <div class="form-row">
       <input id="inputGuild" placeholder="Guild ID (optional)" />
@@ -921,6 +938,52 @@ const server = http.createServer(async (req, res) => {
     });
 
     document.getElementById('refreshTokensBtn').addEventListener('click', fetchTokens);
+
+    document.getElementById('sendBroadcastBtn').addEventListener('click', async () => {
+      const channelId = document.getElementById('broadcastChannelId').value.trim();
+      const count = document.getElementById('broadcastCount').value;
+      const message = document.getElementById('broadcastMessage').value;
+      const mentionCount = document.getElementById('broadcastMention').checked;
+      const imageFile = document.getElementById('broadcastImage').files[0];
+      const statusEl = document.getElementById('broadcastStatus');
+
+      if (!channelId) {
+        statusEl.textContent = 'Please enter a text channel ID.';
+        return;
+      }
+
+      statusEl.textContent = 'Sending broadcast...';
+
+      try {
+        let imageData = null;
+        if (imageFile) {
+          const reader = new FileReader();
+          imageData = await new Promise((resolve, reject) => {
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Image read failed'));
+            reader.readAsDataURL(imageFile);
+          });
+        }
+
+        const res = await fetch('/broadcast/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channelId,
+            message,
+            count,
+            mentionCount,
+            imageData,
+            imageName: imageFile ? imageFile.name : null
+          })
+        });
+
+        const data = await res.json();
+        statusEl.textContent = data.status || data.error || 'Broadcast sent.';
+      } catch (error) {
+        statusEl.textContent = 'Error: ' + error.message;
+      }
+    });
 
     document.getElementById('joinBtn').addEventListener('click', async () => {
       const channelId = channelInput.value.trim();
