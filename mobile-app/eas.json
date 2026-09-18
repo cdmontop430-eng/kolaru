@@ -1,0 +1,17 @@
+{
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "node": "20.19.4",
+      "android": {
+        "buildType": "apk",
+        "image": "ubuntu-22.04-jdk-17-ndk-r25b"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  }
+}
