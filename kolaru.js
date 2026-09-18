@@ -435,6 +435,57 @@ let micResource = null;
 let micActive = false;
 let micGain = 5;
 let micChunks = 0;
+// Live FX state for the phone mic (ffmpeg filter chain, exe-style).
+let micFxProcess = null;
+let voiceFxKey = 'none';
+let distortionEnabled = true;
+const EQ_BANDS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+let eqEnabled = false;
+let eqGains = EQ_BANDS.map(() => 0);
+
+// Voice FX modules - each entry is a live ffmpeg audio filter chain applied
+// to the phone mic before every bot transmits it.
+const VOICE_FX = {
+  none:     { name: 'Clean (no FX)',   filters: null },
+  bass:     { name: 'Bass Boost',      filters: 'bass=g=10:f=110:w=0.5' },
+  deep:     { name: 'Deep Voice',      filters: 'asetrate=48000*0.72,aresample=48000,atempo=1.38' },
+  chipmunk: { name: 'Chipmunk',        filters: 'asetrate=48000*1.55,aresample=48000,atempo=0.65' },
+  echo:     { name: 'Echo',            filters: 'aecho=0.8:0.9:120|240:0.4|0.3' },
+  reverb:   { name: 'Hall Reverb',     filters: 'aecho=1:0.82:500|750:0.28|0.2' },
+  robot:    { name: 'Robot',           filters: 'vibrato=f=4:d=0.8,aresample=48000' },
+  radio:    { name: 'Radio',           filters: 'highpass=f=300,lowpass=f=3400' },
+  treble:   { name: 'Treble Boost',    filters: 'treble=g=8:f=6000:w=0.7' },
+  distort:  { name: 'Distortion',      filters: 'acrusher=bits=8:mix=0.5,alimiter=limit=0.95' },
+};
+
+const MIC_CLARITY_FILTERS = 'highpass=f=75,lowpass=f=15000,equalizer=f=2600:t=q:w=0.9:g=5,acompressor=threshold=-20dB:knee=12dB:ratio=3:attack=5:release=100:makeup=6,alimiter=limit=0.95';
+const MIC_DISTORTION_FILTERS = 'bass=g=12:f=110:w=0.7,equalizer=f=2400:t=q:w=0.8:g=8,treble=g=8:f=7000:w=0.7,acompressor=threshold=-24dB:knee=10dB:ratio=6:attack=2:release=70:makeup=9,volume=3,acrusher=bits=10:mix=0.38:aa=1,alimiter=limit=0.96';
+
+function eqFilterChain() {
+  if (!eqEnabled) return null;
+  const parts = [];
+  for (let i = 0; i < EQ_BANDS.length; i++) {
+    if (Math.abs(eqGains[i]) > 0.05) {
+      parts.push(`equalizer=f=${EQ_BANDS[i]}:t=q:w=1:g=${eqGains[i].toFixed(2)}`);
+    }
+  }
+  return parts.length ? parts.join(',') : null;
+}
+
+function buildMicFilterChain() {
+  const fx = VOICE_FX[voiceFxKey] || VOICE_FX.none;
+  const chain = [MIC_CLARITY_FILTERS, distortionEnabled ? MIC_DISTORTION_FILTERS : null, eqFilterChain(), fx.filters]
+    .filter(Boolean)
+    .join(',');
+  return { fx, chain };
+}
+
+function killMicProcess() {
+  if (micFxProcess) {
+    try { micFxProcess.kill(); } catch (e) {}
+    micFxProcess = null;
+  }
+}
 
 function micLiveBotCount() {
   return bots.filter((bot) => bot.voiceState === 'connected').length;
@@ -445,19 +496,41 @@ function startMicRoute(gain) {
     return { error: 'No bots are in a voice channel yet - join VC first, then start the mic route' };
   }
   if (micSource) { try { micSource.push(null); } catch (e) {} }
+  killMicProcess();
   micSource = new Readable({ read() {} });
-  micResource = createAudioResource(micSource, { inputType: StreamType.Raw, inlineVolume: true });
   micGain = Math.max(0, Math.min(100, Number(gain) || micGain));
+  const { fx, chain } = buildMicFilterChain();
+  if (chain && ffmpeg && fs.existsSync(ffmpeg)) {
+    micFxProcess = spawn(ffmpeg, [
+      '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
+      '-af', chain,
+      '-f', 's16le', '-ar', '48000', '-ac', '2',
+      '-loglevel', 'error',
+      'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    micFxProcess.on('error', (error) => console.error('mic fx process error:', error.message));
+    micFxProcess.stderr.on('data', (chunk) => {
+      const text = String(chunk || '').trim();
+      if (text) console.log(`mic fx ffmpeg: ${text}`);
+    });
+    micFxProcess.stdout.on('data', (chunk) => {
+      if (micSource) micSource.push(chunk);
+    });
+  } else if (fx.filters) {
+    console.log(`warning: FX "${fx.name}" needs ffmpeg but it was not found - mic routed clean`);
+  }
+  micResource = createAudioResource(micSource, { inputType: StreamType.Raw, inlineVolume: true });
   if (micResource.volume) micResource.volume.setVolume(Math.min(10, micGain / 10));
   globalAudioPlayer.play(micResource);
   micActive = true;
   micChunks = 0;
-  console.log(`🎤 phone mic route live -> ${micLiveBotCount()} bot(s) at ${micGain}x gain`);
-  return { status: 'mic route live', micActive: true, gain: micGain, bots: micLiveBotCount() };
+  console.log(`🎤 phone mic route live -> ${micLiveBotCount()} bot(s) at ${micGain}x gain${fx.filters ? ` with "${fx.name}" FX` : ''}${distortionEnabled ? ' + distortion' : ''}${eqEnabled ? ' + equalizer' : ''}`);
+  return { status: 'mic route live', micActive: true, gain: micGain, fx: voiceFxKey, distortion: distortionEnabled, eq: eqEnabled, bots: micLiveBotCount() };
 }
 
 function stopMicRoute() {
   micActive = false;
+  killMicProcess();
   if (micSource) { try { micSource.push(null); } catch (e) {} }
   micSource = null;
   micResource = null;
@@ -467,6 +540,8 @@ function stopMicRoute() {
 }
 
 // Base64 int16 PCM from the phone -> s16le 48kHz stereo for the voice player.
+// With an FX chain active the chunk goes into ffmpeg's stdin and ffmpeg's
+// processed output feeds the shared stream instead.
 function feedMicChunk(base64, sampleRate, channels) {
   if (!micActive || !micSource) return false;
   try {
@@ -482,7 +557,10 @@ function feedMicChunk(base64, sampleRate, channels) {
       }
       out = Buffer.from(stereo.buffer, stereo.byteOffset, stereo.byteLength);
     }
-    micSource.push(out);
+    const target = micFxProcess && micFxProcess.stdin && !micFxProcess.stdin.destroyed
+      ? micFxProcess.stdin
+      : micSource;
+    target.write(out);
     micChunks += 1;
     return true;
   } catch (error) {
@@ -1353,14 +1431,23 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url === '/mic/status' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ micActive, gain: micGain, chunks: micChunks, bots: micLiveBotCount() }));
+    res.end(JSON.stringify({ micActive, gain: micGain, chunks: micChunks, bots: micLiveBotCount(), fx: voiceFxKey, distortion: distortionEnabled, eq: { enabled: eqEnabled, gains: [...eqGains], bands: [...EQ_BANDS] } }));
     return;
   }
   if (req.url === '/audio/fx' && req.method === 'POST') {
     try {
       const body = await parseJSONBody(req);
+      const key = String(body.fx || 'none').toLowerCase();
+      if (!VOICE_FX[key]) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Unknown FX "${key}"`, available: Object.keys(VOICE_FX) }));
+        return;
+      }
+      voiceFxKey = key;
+      if (typeof body.distortion === 'boolean') distortionEnabled = body.distortion;
+      if (micActive) startMicRoute(micGain); // restart the ffmpeg chain live
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'voice fx updated', fx: body.fx || 'none' }));
+      res.end(JSON.stringify({ status: 'voice fx updated', fx: voiceFxKey, name: VOICE_FX[key].name, distortion: distortionEnabled, live: micActive }));
     } catch (error) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message }));
@@ -1369,9 +1456,17 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url === '/audio/eq' && req.method === 'POST') {
     try {
-      await parseJSONBody(req);
+      const body = await parseJSONBody(req);
+      if (typeof body.enabled === 'boolean') eqEnabled = body.enabled;
+      if (Array.isArray(body.gains)) {
+        eqGains = EQ_BANDS.map((_, i) => {
+          const value = Number(body.gains[i]);
+          return Number.isFinite(value) ? Math.max(-15, Math.min(15, value)) : 0;
+        });
+      }
+      if (micActive) startMicRoute(micGain); // restart the ffmpeg chain live
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'equalizer updated' }));
+      res.end(JSON.stringify({ status: 'equalizer updated', enabled: eqEnabled, gains: [...eqGains], live: micActive }));
     } catch (error) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message }));
