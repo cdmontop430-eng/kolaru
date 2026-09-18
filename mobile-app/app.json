@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Veera Mobile Control",
+    "slug": "veera-mobile-control",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/veera-icon.png",
+    "userInterfaceStyle": "dark",
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Veera to use your microphone for live mic routing."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.veera.mobilecontrol",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F18",
+        "foregroundImage": "./assets/veera-icon.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c9bc2a0b-2669-43b2-b3d7-500ce6277c43"
+      }
+    },
+    "owner": "veeraexe"
+  }
+}

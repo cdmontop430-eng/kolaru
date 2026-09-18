@@ -429,6 +429,68 @@ if (bots.length > 0) {
 } else {
   console.log('🚀 Bot manager started. Add token from the website to begin login.');
 }
+// ---- Phone mic route: the mobile app streams PCM chunks here, every bot transmits it ----
+let micSource = null;
+let micResource = null;
+let micActive = false;
+let micGain = 5;
+let micChunks = 0;
+
+function micLiveBotCount() {
+  return bots.filter((bot) => bot.voiceState === 'connected').length;
+}
+
+function startMicRoute(gain) {
+  if (micLiveBotCount() === 0) {
+    return { error: 'No bots are in a voice channel yet - join VC first, then start the mic route' };
+  }
+  if (micSource) { try { micSource.push(null); } catch (e) {} }
+  micSource = new Readable({ read() {} });
+  micResource = createAudioResource(micSource, { inputType: StreamType.Raw, inlineVolume: true });
+  micGain = Math.max(0, Math.min(100, Number(gain) || micGain));
+  if (micResource.volume) micResource.volume.setVolume(Math.min(10, micGain / 10));
+  globalAudioPlayer.play(micResource);
+  micActive = true;
+  micChunks = 0;
+  console.log(`🎤 phone mic route live -> ${micLiveBotCount()} bot(s) at ${micGain}x gain`);
+  return { status: 'mic route live', micActive: true, gain: micGain, bots: micLiveBotCount() };
+}
+
+function stopMicRoute() {
+  micActive = false;
+  if (micSource) { try { micSource.push(null); } catch (e) {} }
+  micSource = null;
+  micResource = null;
+  playGlobalSilence();
+  console.log('🎤 phone mic route stopped');
+  return { status: 'microphone route stopped', micActive: false };
+}
+
+// Base64 int16 PCM from the phone -> s16le 48kHz stereo for the voice player.
+function feedMicChunk(base64, sampleRate, channels) {
+  if (!micActive || !micSource) return false;
+  try {
+    const buf = Buffer.from(String(base64 || ''), 'base64');
+    if (!buf.length) return false;
+    let out = buf;
+    if (Number(channels) === 1) {
+      const mono = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2));
+      const stereo = new Int16Array(mono.length * 2);
+      for (let i = 0; i < mono.length; i++) {
+        stereo[i * 2] = mono[i];
+        stereo[i * 2 + 1] = mono[i];
+      }
+      out = Buffer.from(stereo.buffer, stereo.byteOffset, stereo.byteLength);
+    }
+    micSource.push(out);
+    micChunks += 1;
+    return true;
+  } catch (error) {
+    console.error('mic chunk failed:', error.message);
+    return false;
+  }
+}
+
 console.log(`🧠 Health endpoint enabled on port ${port}`);
 
 const server = http.createServer(async (req, res) => {
@@ -1247,6 +1309,73 @@ const server = http.createServer(async (req, res) => {
     updateVoiceState(globalMute, false);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'undeafened all bots' }));
+    return;
+  }
+
+  // ---- Phone mic route endpoints (used by the Veera mobile app) ----
+  if (req.url === '/mic/start' && req.method === 'POST') {
+    let body = {};
+    try { body = await parseJSONBody(req); } catch (e) {}
+    const result = startMicRoute(body.gain);
+    res.writeHead(result.error ? 400 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+    return;
+  }
+  if (req.url === '/mic/stop' && req.method === 'POST') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(stopMicRoute()));
+    return;
+  }
+  if (req.url === '/mic/gain' && req.method === 'POST') {
+    try {
+      const body = await parseJSONBody(req);
+      micGain = Math.max(0, Math.min(100, Number(body.gain) || micGain));
+      if (micResource && micResource.volume) micResource.volume.setVolume(Math.min(10, micGain / 10));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'mic gain updated', gain: micGain }));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+  if (req.url === '/mic/chunk' && req.method === 'POST') {
+    try {
+      const body = await parseJSONBody(req);
+      const ok = feedMicChunk(body.data, body.sampleRate, body.channels);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok, chunks: micChunks }));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+  if (req.url === '/mic/status' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ micActive, gain: micGain, chunks: micChunks, bots: micLiveBotCount() }));
+    return;
+  }
+  if (req.url === '/audio/fx' && req.method === 'POST') {
+    try {
+      const body = await parseJSONBody(req);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'voice fx updated', fx: body.fx || 'none' }));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+  if (req.url === '/audio/eq' && req.method === 'POST') {
+    try {
+      await parseJSONBody(req);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'equalizer updated' }));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
     return;
   }
 
